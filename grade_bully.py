@@ -23,6 +23,7 @@ import sys
 import time
 import threading
 import signal
+import multiprocessing
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
@@ -32,6 +33,12 @@ GCD_PORT = 50000
 BASE_LISTEN_PORT = 60000
 RUNTIME_SECONDS = 30
 NUM_NODES = 4  # Number of nodes to simulate per student
+
+# Validation constraints
+VALID_SU_ID_MIN = 1000000
+VALID_SU_ID_MAX = 9999999
+VALID_DAYS_MIN = 0
+VALID_DAYS_MAX = 365
 
 # Grading criteria points
 POINTS = {
@@ -45,14 +52,27 @@ POINTS = {
     "failure_simulation": 5,  # Extra credit
 }
 
-# Test node configurations (days_to_birthday, su_id)
+# Test node configurations (days_to_birthday, su_id, month_day)
 # These create different priorities for the Bully algorithm
+# All values validated: su_id in [1000000, 9999999], days in [0, 365]
 NODE_CONFIGS = [
-    (100, 1234567, "01-29"),  # Lowest priority
-    (50, 2345678, "12-11"),   # Medium priority
-    (200, 3456789, "07-09"),  # Higher priority
-    (150, 4567890, "03-20"),  # Highest priority (becomes leader)
+    (100, 1234567, "01-29"),  # Priority 1 (lower days = higher priority in bully)
+    (200, 2345678, "12-11"),  # Priority 2
+    (300, 3456789, "07-09"),  # Priority 3
+    (50, 4567890, "03-20"),   # Priority 4 (highest priority - will be leader)
 ]
+
+def validate_node_config(days, su_id):
+    """Validate that days and su_id are within acceptable ranges"""
+    if not (VALID_DAYS_MIN <= days <= VALID_DAYS_MAX):
+        raise ValueError(f"Days must be in range [{VALID_DAYS_MIN}, {VALID_DAYS_MAX}], got {days}")
+    if not (VALID_SU_ID_MIN <= su_id <= VALID_SU_ID_MAX):
+        raise ValueError(f"SU_ID must be in range [{VALID_SU_ID_MIN}, {VALID_SU_ID_MAX}], got {su_id}")
+    return True
+
+# Validate NODE_CONFIGS on module load
+for days, su_id, _ in NODE_CONFIGS:
+    validate_node_config(days, su_id)
 
 
 class ArgumentParser:
@@ -656,19 +676,125 @@ def prompt_for_template_on_error(student_name, usage_output, attempted_commands)
             continue
 
 
+def grade_single_student(student_data):
+    """
+    Grade a single student in a separate process
+
+    Args:
+        student_data: dict with keys: student_name, lab_file, arg_generator,
+                     usage_text, gcd_port, timeout, verbose
+
+    Returns:
+        tuple: (student_name, result_dict)
+    """
+    student_name = student_data['student_name']
+    lab_file = student_data['lab_file']
+    arg_generator = student_data['arg_generator']
+    usage_text = student_data['usage_text']
+    gcd_port = student_data['gcd_port']
+    timeout = student_data['timeout']
+    verbose = student_data['verbose']
+    gcd_script = student_data['gcd_script']
+
+    print(f"\n{'='*60}", flush=True)
+    print(f"[Process {os.getpid()}] Grading: {student_name}", flush=True)
+    print(f"{'='*60}", flush=True)
+    print(f"Using GCD port: {gcd_port}", flush=True)
+
+    # Start dedicated GCD server for this student
+    gcd = GCDServer(gcd_script, gcd_port)
+
+    if not gcd.start():
+        print(f"[{student_name}] Failed to start GCD server on port {gcd_port}!", flush=True)
+        return (student_name, {
+            "scores": {key: 0 for key in POINTS.keys()},
+            "comments": [],
+            "errors": [f"Failed to start GCD server on port {gcd_port}"],
+            "total": 0
+        })
+
+    print(f"[{student_name}] GCD server started on port {gcd_port}", flush=True)
+
+    try:
+        # Try grading, with retry if argument format is wrong
+        success = False
+        max_retries = 3
+        grader = None
+
+        for attempt in range(max_retries):
+            # Create grader
+            grader = StudentGrader(student_name, lab_file, arg_generator, verbose=verbose)
+
+            # Run and grade
+            if verbose:
+                print(f"\n[{student_name}] Running {NUM_NODES} nodes for {timeout} seconds...", flush=True)
+                print(f"{'─'*60}", flush=True)
+                print(f"[{student_name}] Real-time node output (color-coded):", flush=True)
+                print(f"{'─'*60}", flush=True)
+            else:
+                print(f"\n[{student_name}] Running {NUM_NODES} nodes for {timeout} seconds...", flush=True)
+
+            run_success = grader.run_nodes("localhost", gcd_port, timeout)
+
+            if run_success:
+                # No usage errors, proceed with grading
+                success = True
+                break
+            else:
+                # Usage errors detected - for parallel mode, we skip retries
+                # (interactive prompts don't work well in parallel)
+                print(f"[{student_name}] ⚠️  Usage errors detected. Marking as failed.", flush=True)
+                grader.stop_nodes()
+                break
+
+        if success and grader:
+            print(f"[{student_name}] Analyzing output...", flush=True)
+            result = grader.analyze_and_grade()
+
+            # Print summary
+            print(f"\n[{student_name}] Results:", flush=True)
+            print(f"  Total Score: {result['total']}/{sum(POINTS.values())}", flush=True)
+            if result['comments']:
+                print(f"  Comments:", flush=True)
+                for comment in result['comments']:
+                    print(f"    {comment}", flush=True)
+            if result['errors']:
+                print(f"  Errors:", flush=True)
+                for error in result['errors']:
+                    print(f"    ❌ {error}", flush=True)
+
+            return (student_name, result)
+        else:
+            return (student_name, {
+                "scores": {key: 0 for key in POINTS.keys()},
+                "comments": [],
+                "errors": ["Failed - usage errors detected"],
+                "total": 0
+            })
+
+    finally:
+        # Cleanup GCD
+        print(f"[{student_name}] Stopping GCD server...", flush=True)
+        gcd.stop()
+
+
 def main():
     parser = argparse.ArgumentParser(description='Grade Bully Algorithm submissions')
     parser.add_argument('--students', help='Comma-separated list of students to grade')
     parser.add_argument('--timeout', type=int, default=RUNTIME_SECONDS,
                        help=f'Runtime per student in seconds (default: {RUNTIME_SECONDS})')
     parser.add_argument('--gcd-port', type=int, default=GCD_PORT,
-                       help=f'GCD port (default: {GCD_PORT})')
+                       help=f'Starting GCD port (default: {GCD_PORT})')
     parser.add_argument('--output', default='grading_results.json',
                        help='Output JSON file (default: grading_results.json)')
     parser.add_argument('--base-dir', default='.',
                        help='Base directory containing student folders (default: current directory)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Show real-time output from nodes with color-coded events')
+    parser.add_argument('--parallel', '-p', action='store_true',
+                       help='Grade all students in parallel with separate GCD servers')
+    parser.add_argument('--max-parallel', type=int, default=4,
+                       help='Maximum number of students to grade in parallel (default: 4)')
 
     args = parser.parse_args()
 
@@ -699,24 +825,18 @@ def main():
     # Results container
     results = {}
 
-    # Start GCD server
-    print(f"\nStarting GCD server on port {args.gcd_port}...")
-    gcd = GCDServer(gcd_script, args.gcd_port)
+    # Decide whether to run in parallel or sequential mode
+    if args.parallel:
+        print(f"\n🚀 PARALLEL MODE: Grading students in parallel (max {args.max_parallel} at a time)")
+        print(f"   Each student will have their own GCD server on separate ports")
+        print(f"   Note: Interactive prompts are disabled in parallel mode")
+        print(f"{'='*60}\n")
 
-    if not gcd.start():
-        print("Failed to start GCD server!")
-        return 1
+        # Collect argument generators for all students
+        student_data_list = []
+        next_port = args.gcd_port
 
-    print("GCD server started successfully")
-
-    try:
-        # Grade each student
         for student_name, lab_file in submissions.items():
-            print(f"\n{'='*60}")
-            print(f"Grading: {student_name}")
-            print(f"{'='*60}")
-
-            # Get argument generator for this student
             usage_text = usage_patterns.get(student_name, "")
             arg_generator = ArgumentParser.parse_usage_line(usage_text)
 
@@ -724,7 +844,7 @@ def main():
             confirmed_generator = prompt_for_argument_format(student_name, arg_generator, usage_text)
 
             if confirmed_generator is None and arg_generator is None:
-                # User chose to skip or no generator available
+                # User chose to skip
                 skip_response = input("\nNo argument format specified. Skip this student? (y/n): ").strip().lower()
                 if skip_response == 'y' or skip_response == 'yes':
                     print(f"\n⏭️  Skipping {student_name}")
@@ -734,103 +854,177 @@ def main():
                         "errors": ["Skipped - no argument format"],
                         "total": 0
                     }
-                    # Reset GCD
-                    gcd.stop()
-                    time.sleep(1)
-                    gcd.start()
                     continue
 
             # Use confirmed generator (or keep the auto-detected one if user said yes)
             if confirmed_generator is not None:
                 arg_generator = confirmed_generator
 
-            # Try grading, with retry if argument format is wrong
-            success = False
-            max_retries = 3
-            for attempt in range(max_retries):
-                # Create grader
-                grader = StudentGrader(student_name, lab_file, arg_generator, verbose=args.verbose)
+            student_data_list.append({
+                'student_name': student_name,
+                'lab_file': lab_file,
+                'arg_generator': arg_generator,
+                'usage_text': usage_text,
+                'gcd_port': next_port,
+                'timeout': args.timeout,
+                'verbose': args.verbose,
+                'gcd_script': gcd_script
+            })
+            next_port += 1
 
-                # Run and grade
-                if args.verbose:
-                    print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
-                    print(f"{'─'*60}")
-                    print("Real-time node output (color-coded):")
-                    print(f"{'─'*60}")
-                else:
-                    print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
+        # Run grading in parallel using multiprocessing
+        if student_data_list:
+            print(f"\nStarting parallel grading of {len(student_data_list)} student(s)...")
+            print(f"{'='*60}\n")
 
-                run_success = grader.run_nodes("localhost", args.gcd_port, args.timeout)
+            with multiprocessing.Pool(processes=min(args.max_parallel, len(student_data_list))) as pool:
+                parallel_results = pool.map(grade_single_student, student_data_list)
 
-                if run_success:
-                    # No usage errors, proceed with grading
-                    success = True
-                    break
-                else:
-                    # Usage errors detected - prompt for manual input
-                    grader.stop_nodes()  # Clean up failed processes
+            # Collect results
+            for student_name, result in parallel_results:
+                results[student_name] = result
 
-                    # Extract usage messages
-                    usage_lines = []
-                    for node_id, lines in grader.outputs.items():
-                        for _, line in lines:
-                            if 'usage:' in line.lower():
-                                usage_lines.append(line)
-                        if usage_lines:
-                            break  # Just need one example
+            print(f"\n{'='*60}")
+            print("✓ Parallel grading complete!")
+            print(f"{'='*60}")
 
-                    # Get attempted commands for display
-                    attempted_cmds = grader.get_attempted_commands()
+    else:
+        # Sequential mode (original behavior)
+        print(f"\n📋 SEQUENTIAL MODE: Grading students one at a time")
+        print(f"{'='*60}\n")
 
-                    # Prompt user for correct template
-                    new_generator = prompt_for_template_on_error(student_name, usage_lines, attempted_cmds)
+        # Start GCD server
+        print(f"Starting GCD server on port {args.gcd_port}...")
+        gcd = GCDServer(gcd_script, args.gcd_port)
 
-                    if new_generator is None:
-                        # User chose to skip this student
+        if not gcd.start():
+            print("Failed to start GCD server!")
+            return 1
+
+        print("GCD server started successfully")
+
+        try:
+            # Grade each student
+            for student_name, lab_file in submissions.items():
+                print(f"\n{'='*60}")
+                print(f"Grading: {student_name}")
+                print(f"{'='*60}")
+
+                # Get argument generator for this student
+                usage_text = usage_patterns.get(student_name, "")
+                arg_generator = ArgumentParser.parse_usage_line(usage_text)
+
+                # Always prompt user to confirm/change argument format
+                confirmed_generator = prompt_for_argument_format(student_name, arg_generator, usage_text)
+
+                if confirmed_generator is None and arg_generator is None:
+                    # User chose to skip or no generator available
+                    skip_response = input("\nNo argument format specified. Skip this student? (y/n): ").strip().lower()
+                    if skip_response == 'y' or skip_response == 'yes':
                         print(f"\n⏭️  Skipping {student_name}")
                         results[student_name] = {
                             "scores": {key: 0 for key in POINTS.keys()},
                             "comments": [],
-                            "errors": ["Skipped - incorrect argument format"],
+                            "errors": ["Skipped - no argument format"],
                             "total": 0
                         }
+                        # Reset GCD
+                        gcd.stop()
+                        time.sleep(1)
+                        gcd.start()
+                        continue
+
+                # Use confirmed generator (or keep the auto-detected one if user said yes)
+                if confirmed_generator is not None:
+                    arg_generator = confirmed_generator
+
+                # Try grading, with retry if argument format is wrong
+                success = False
+                max_retries = 3
+                for attempt in range(max_retries):
+                    # Create grader
+                    grader = StudentGrader(student_name, lab_file, arg_generator, verbose=args.verbose)
+
+                    # Run and grade
+                    if args.verbose:
+                        print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
+                        print(f"{'─'*60}")
+                        print("Real-time node output (color-coded):")
+                        print(f"{'─'*60}")
+                    else:
+                        print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
+
+                    run_success = grader.run_nodes("localhost", args.gcd_port, args.timeout)
+
+                    if run_success:
+                        # No usage errors, proceed with grading
+                        success = True
                         break
+                    else:
+                        # Usage errors detected - prompt for manual input
+                        grader.stop_nodes()  # Clean up failed processes
 
-                    # Update arg_generator and retry
-                    arg_generator = new_generator
-                    print(f"\n🔄 Retrying with new argument format...")
+                        # Extract usage messages
+                        usage_lines = []
+                        for node_id, lines in grader.outputs.items():
+                            for _, line in lines:
+                                if 'usage:' in line.lower():
+                                    usage_lines.append(line)
+                            if usage_lines:
+                                break  # Just need one example
 
-                    # Reset GCD
-                    gcd.stop()
-                    time.sleep(1)
-                    gcd.start()
+                        # Get attempted commands for display
+                        attempted_cmds = grader.get_attempted_commands()
 
-            if success:
-                print("\nAnalyzing output...")
-                result = grader.analyze_and_grade()
-                results[student_name] = result
+                        # Prompt user for correct template
+                        new_generator = prompt_for_template_on_error(student_name, usage_lines, attempted_cmds)
 
-                # Print summary
-                print(f"\nResults for {student_name}:")
-                print(f"  Total Score: {result['total']}/{sum(POINTS.values())}")
-                if result['comments']:
-                    print("  Comments:")
-                    for comment in result['comments']:
-                        print(f"    {comment}")
-                if result['errors']:
-                    print("  Errors:")
-                    for error in result['errors']:
-                        print(f"    ❌ {error}")
+                        if new_generator is None:
+                            # User chose to skip this student
+                            print(f"\n⏭️  Skipping {student_name}")
+                            results[student_name] = {
+                                "scores": {key: 0 for key in POINTS.keys()},
+                                "comments": [],
+                                "errors": ["Skipped - incorrect argument format"],
+                                "total": 0
+                            }
+                            break
 
-            # Reset GCD between students
+                        # Update arg_generator and retry
+                        arg_generator = new_generator
+                        print(f"\n🔄 Retrying with new argument format...")
+
+                        # Reset GCD
+                        gcd.stop()
+                        time.sleep(1)
+                        gcd.start()
+
+                if success:
+                    print("\nAnalyzing output...")
+                    result = grader.analyze_and_grade()
+                    results[student_name] = result
+
+                    # Print summary
+                    print(f"\nResults for {student_name}:")
+                    print(f"  Total Score: {result['total']}/{sum(POINTS.values())}")
+                    if result['comments']:
+                        print("  Comments:")
+                        for comment in result['comments']:
+                            print(f"    {comment}")
+                    if result['errors']:
+                        print("  Errors:")
+                        for error in result['errors']:
+                            print(f"    ❌ {error}")
+
+                # Reset GCD between students
+                gcd.stop()
+                time.sleep(1)
+                gcd.start()
+
+        finally:
+            # Cleanup GCD
+            print("\nStopping GCD server...")
             gcd.stop()
-            time.sleep(1)
-            gcd.start()
-
-    finally:
-        # Cleanup GCD
-        print("\nStopping GCD server...")
-        gcd.stop()
 
     # Save results to JSON
     output_file = args.output

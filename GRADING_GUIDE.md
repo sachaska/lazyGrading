@@ -165,16 +165,50 @@ Is this correct? (y/n): y
 - Option to skip problematic students
 - Automatic retry if format is still wrong
 
+### Parallel Grading Mode
+
+Grade multiple students simultaneously for **much faster grading**:
+
+```bash
+python3 grade_bully.py --parallel --max-parallel 4
+```
+
+**How it works:**
+- Each student gets their own GCD server on a separate port
+- Students are graded in parallel using multiprocessing
+- Significantly faster when grading many students
+- Output from all processes shown in real-time
+
+**Example:**
+```bash
+# Grade 4 students in parallel
+python3 grade_bully.py --students ychoi4,ncrouch,pdesai1,mkumar1 --parallel --timeout 20
+
+🚀 PARALLEL MODE: Grading students in parallel (max 4 at a time)
+   Each student will have their own GCD server on separate ports
+
+[Process 12345] Grading: ychoi4 - Using GCD port: 50000
+[Process 12346] Grading: ncrouch - Using GCD port: 50001
+[Process 12347] Grading: pdesai1 - Using GCD port: 50002
+[Process 12348] Grading: mkumar1 - Using GCD port: 50003
+...
+✓ Parallel grading complete!
+```
+
+**Note:** Interactive error prompts are disabled in parallel mode. Make sure arguments are correct before running.
+
 ### Command-Line Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--students` | all | Comma-separated list of student names to grade |
 | `--timeout` | 30 | Runtime per student in seconds |
-| `--gcd-port` | 50000 | Port for GCD server |
+| `--gcd-port` | 50000 | Starting GCD port (increments for each student in parallel mode) |
 | `--output` | `grading_results.json` | Output JSON file path |
 | `--base-dir` | `.` | Base directory containing student folders |
 | `--verbose`, `-v` | off | Show real-time output with color-coded events |
+| `--parallel`, `-p` | off | Grade all students in parallel with separate GCD servers |
+| `--max-parallel` | 4 | Maximum number of students to grade in parallel |
 
 ## Grading Criteria
 
@@ -197,10 +231,14 @@ The script evaluates submissions based on the following criteria:
 ### 1. Node Simulation
 
 For each student, the script launches 4 nodes with different priorities:
-- Node 0: (100 days, SU_ID: 1234567) - Lowest priority
-- Node 1: (50 days, SU_ID: 2345678) - Medium priority
-- Node 2: (200 days, SU_ID: 3456789) - Higher priority
-- Node 3: (150 days, SU_ID: 4567890) - Highest priority
+- Node 0: (100 days, SU_ID: 1234567) - Priority 1
+- Node 1: (200 days, SU_ID: 2345678) - Priority 2
+- Node 2: (300 days, SU_ID: 3456789) - Priority 3
+- Node 3: (50 days, SU_ID: 4567890) - Priority 4 (highest priority - becomes leader)
+
+**Validation:** All values are validated to ensure:
+- Student IDs are in range [1,000,000 - 9,999,999]
+- Days to birthday are in range [0 - 365]
 
 ### 2. Argument Pattern Detection
 
