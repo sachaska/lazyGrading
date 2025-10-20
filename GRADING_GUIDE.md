@@ -60,6 +60,23 @@ python3 grade_bully.py \
   --output results.json
 ```
 
+### Verbose Mode (Debug Mode)
+
+Watch real-time output from all nodes with color-coded events:
+```bash
+python3 grade_bully.py --students ychoi4 --verbose --timeout 15
+```
+
+This shows:
+- 🗳️ **Yellow**: Elections starting
+- 👑 **Green**: Leader elected
+- 🔍 **Cyan**: PROBE messages
+- 💀 **Red**: Node failures
+- 💚 **Green**: Node recovery
+- 🤝 **Magenta**: GCD join
+- 📨 **Cyan**: Election responses
+- Each line prefixed with `[NodeID|days|SU_ID]`
+
 ### Command-Line Options
 
 | Option | Default | Description |
@@ -69,6 +86,7 @@ python3 grade_bully.py \
 | `--gcd-port` | 50000 | Port for GCD server |
 | `--output` | `grading_results.json` | Output JSON file path |
 | `--base-dir` | `.` | Base directory containing student folders |
+| `--verbose`, `-v` | off | Show real-time output with color-coded events |
 
 ## Grading Criteria
 

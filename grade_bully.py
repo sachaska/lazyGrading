@@ -134,10 +134,11 @@ class ArgumentParser:
 class StudentGrader:
     """Grades a single student's submission"""
 
-    def __init__(self, student_name, lab_file, arg_generator):
+    def __init__(self, student_name, lab_file, arg_generator, verbose=False):
         self.student_name = student_name
         self.lab_file = lab_file
         self.arg_generator = arg_generator
+        self.verbose = verbose
         self.processes = []
         self.outputs = defaultdict(list)
         self.scores = {key: 0 for key in POINTS.keys()}
@@ -196,9 +197,62 @@ class StudentGrader:
                 if not line and process.poll() is not None:
                     break
                 if line:
-                    self.outputs[node_id].append(('output', line.strip()))
+                    stripped_line = line.strip()
+                    self.outputs[node_id].append(('output', stripped_line))
+
+                    # Print real-time output in verbose mode
+                    if self.verbose and stripped_line:
+                        self._print_node_output(node_id, stripped_line)
         except Exception as e:
             pass
+
+    def _print_node_output(self, node_id, line):
+        """Print formatted node output with highlighting for important events"""
+        # Get node info
+        days, su_id, month_day = NODE_CONFIGS[node_id]
+        node_label = f"[Node{node_id}|{days}d|{su_id}]"
+
+        # Color codes (ANSI)
+        RESET = '\033[0m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        MAGENTA = '\033[95m'
+        CYAN = '\033[96m'
+        RED = '\033[91m'
+        BOLD = '\033[1m'
+
+        line_lower = line.lower()
+
+        # Highlight important events
+        if 'election' in line_lower and 'started' in line_lower:
+            print(f"{BOLD}{YELLOW}{node_label} 🗳️  {line}{RESET}")
+        elif 'i_am_leader' in line_lower or 'become leader' in line_lower:
+            print(f"{BOLD}{GREEN}{node_label} 👑 {line}{RESET}")
+        elif 'new leader' in line_lower:
+            print(f"{BOLD}{GREEN}{node_label} ✓  {line}{RESET}")
+        elif 'elect' in line_lower and 'response' in line_lower:
+            print(f"{CYAN}{node_label} 📨 {line}{RESET}")
+        elif 'elect' in line_lower:
+            print(f"{BLUE}{node_label} 🗳️  {line}{RESET}")
+        elif 'probe' in line_lower and 'failed' in line_lower:
+            print(f"{RED}{node_label} ❌ {line}{RESET}")
+        elif 'probe' in line_lower:
+            print(f"{CYAN}{node_label} 🔍 {line}{RESET}")
+        elif 'fail' in line_lower and 'simulat' in line_lower:
+            print(f"{RED}{node_label} 💀 {line}{RESET}")
+        elif 'recover' in line_lower:
+            print(f"{GREEN}{node_label} 💚 {line}{RESET}")
+        elif 'join' in line_lower or 'howdy' in line_lower:
+            print(f"{MAGENTA}{node_label} 🤝 {line}{RESET}")
+        elif 'listen' in line_lower or 'port' in line_lower:
+            print(f"{MAGENTA}{node_label} 👂 {line}{RESET}")
+        elif 'error' in line_lower or 'exception' in line_lower:
+            print(f"{RED}{node_label} ⚠️  {line}{RESET}")
+        else:
+            # Regular output
+            print(f"{node_label} {line}")
+
 
     def stop_nodes(self):
         """Stop all running node processes"""
@@ -383,6 +437,8 @@ def main():
                        help='Output JSON file (default: grading_results.json)')
     parser.add_argument('--base-dir', default='.',
                        help='Base directory containing student folders (default: current directory)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Show real-time output from nodes with color-coded events')
 
     args = parser.parse_args()
 
@@ -435,10 +491,16 @@ def main():
             arg_generator = ArgumentParser.parse_usage_line(usage_text)
 
             # Create grader
-            grader = StudentGrader(student_name, lab_file, arg_generator)
+            grader = StudentGrader(student_name, lab_file, arg_generator, verbose=args.verbose)
 
             # Run and grade
-            print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
+            if args.verbose:
+                print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
+                print(f"{'─'*60}")
+                print("Real-time node output (color-coded):")
+                print(f"{'─'*60}")
+            else:
+                print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
             grader.run_nodes("localhost", args.gcd_port, args.timeout)
 
             print("Analyzing output...")
