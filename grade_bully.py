@@ -59,6 +59,44 @@ class ArgumentParser:
     """Parse different student argument formats"""
 
     @staticmethod
+    def parse_template(template):
+        """
+        Parse a user-provided template string and return an argument generator function.
+
+        Template variables:
+        - {gcd_host} or {host}
+        - {gcd_port} or {port}
+        - {listen_port}
+        - {su_id} or {suid}
+        - {days} or {bday}
+        - {month_day} (MM-DD format)
+
+        Example: "{gcd_host} {gcd_port} {listen_port} {su_id} {month_day}"
+        """
+        def generator(gcd_host, gcd_port, listen_port, su_id, bday, month_day):
+            result = template
+            # Replace all possible variables
+            replacements = {
+                '{gcd_host}': gcd_host,
+                '{host}': gcd_host,
+                '{gcd_port}': str(gcd_port),
+                '{port}': str(gcd_port),
+                '{listen_port}': str(listen_port),
+                '{su_id}': str(su_id),
+                '{suid}': str(su_id),
+                '{days}': str(bday),
+                '{bday}': str(bday),
+                '{month_day}': month_day,
+            }
+            for key, value in replacements.items():
+                result = result.replace(key, value)
+
+            # Split by whitespace and return as list
+            return result.split()
+
+        return generator
+
+    @staticmethod
     def parse_usage_line(usage_text):
         """
         Extract argument pattern from usage text
@@ -72,7 +110,7 @@ class ArgumentParser:
         # Pattern matching for different argument formats
         patterns = [
             # Pattern: GCD_HOST GCD_PORT LISTEN_PORT SU_ID B-DAY
-            (r'gcd.*host.*gcd.*port.*listen.*port.*su.*id.*b.*day|b.*day',
+            (r'gcd.*host.*gcd.*port.*listen.*su.*id.*b.*day',
              lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
                 [gcd_host, str(gcd_port), str(listen_port), str(su_id), month_day]),
 
@@ -184,11 +222,40 @@ class StudentGrader:
             except Exception as e:
                 self.errors.append(f"Failed to start node {i}: {str(e)}")
 
-        # Let them run
-        time.sleep(runtime)
+        # Let them run briefly to detect usage errors
+        time.sleep(2)
+
+        # Check if we got usage errors
+        if self._has_usage_errors():
+            return False  # Signal that we need to retry
+
+        # Continue running for the full runtime
+        time.sleep(runtime - 2)
 
         # Cleanup
         self.stop_nodes()
+        return True
+
+    def _has_usage_errors(self):
+        """Check if processes are outputting usage messages (incorrect arguments)"""
+        for node_id, lines in self.outputs.items():
+            for _, line in lines:
+                if 'usage:' in line.lower() and ('python' in line.lower() or 'lab' in line.lower()):
+                    return True
+        return False
+
+    def get_attempted_commands(self):
+        """Get the commands that were attempted for debugging"""
+        commands = []
+        for i, (days, su_id, month_day) in enumerate(NODE_CONFIGS):
+            listen_port = BASE_LISTEN_PORT + i
+            if self.arg_generator:
+                args = self.arg_generator('localhost', 50000, listen_port, su_id, days, month_day)
+            else:
+                args = ['localhost', '50000', str(days), str(su_id)]
+            cmd = f"python3 {self.lab_file} {' '.join(args)}"
+            commands.append(cmd)
+        return commands
 
     def _collect_output(self, process, node_id):
         """Collect stdout/stderr from a process"""
@@ -428,6 +495,75 @@ def load_usage_patterns(folder_args_file="folder_args.md"):
     return usage_patterns
 
 
+def prompt_for_template(student_name, usage_output, attempted_commands):
+    """
+    Prompt user to provide argument template when auto-detection fails
+
+    Returns: arg_generator function or None to skip
+    """
+    print(f"\n{'!'*60}")
+    print(f"⚠️  ARGUMENT FORMAT ERROR for {student_name}")
+    print(f"{'!'*60}")
+    print("\nThe auto-detected argument format appears to be incorrect.")
+    print("\nUsage message from student's code:")
+    for line in usage_output:
+        print(f"  {line}")
+
+    print("\nAttempted command (Node 0 example):")
+    if attempted_commands:
+        print(f"  {attempted_commands[0]}")
+
+    print("\n" + "─"*60)
+    print("Please provide the correct argument template:")
+    print("\nAvailable variables:")
+    print("  {gcd_host}    - GCD server hostname")
+    print("  {gcd_port}    - GCD server port")
+    print("  {listen_port} - Node's listening port")
+    print("  {su_id}       - Student ID")
+    print("  {days}        - Days to birthday")
+    print("  {month_day}   - Birthday in MM-DD format")
+    print("\nCommon templates:")
+    print("  1. {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}")
+    print("  2. {gcd_host} {gcd_port} {su_id} {days}")
+    print("  3. {su_id} {days} {gcd_host} {gcd_port}")
+    print("  4. {days} {su_id} {gcd_host} {gcd_port}")
+    print("\n" + "─"*60)
+
+    while True:
+        template = input("\nEnter template (or 'skip' to skip this student): ").strip()
+
+        if template.lower() == 'skip':
+            return None
+
+        if not template:
+            print("❌ Template cannot be empty. Try again.")
+            continue
+
+        # Validate template has at least some variables
+        if '{' not in template:
+            print("❌ Template should contain variables like {gcd_host}, {gcd_port}, etc.")
+            continue
+
+        # Try to create generator
+        try:
+            arg_gen = ArgumentParser.parse_template(template)
+            # Test it
+            test_args = arg_gen('localhost', 50000, 60000, 1234567, 100, '01-29')
+            print(f"\n✓ Template accepted. Test command:")
+            print(f"  python3 lab2.py {' '.join(test_args)}")
+
+            confirm = input("\nIs this correct? (y/n): ").strip().lower()
+            if confirm == 'y':
+                return arg_gen
+            else:
+                print("\nLet's try again...")
+                continue
+
+        except Exception as e:
+            print(f"❌ Error with template: {e}")
+            continue
+
+
 def main():
     parser = argparse.ArgumentParser(description='Grade Bully Algorithm submissions')
     parser.add_argument('--students', help='Comma-separated list of students to grade')
@@ -492,34 +628,83 @@ def main():
             usage_text = usage_patterns.get(student_name, "")
             arg_generator = ArgumentParser.parse_usage_line(usage_text)
 
-            # Create grader
-            grader = StudentGrader(student_name, lab_file, arg_generator, verbose=args.verbose)
+            # Try grading, with retry if argument format is wrong
+            success = False
+            max_retries = 3
+            for attempt in range(max_retries):
+                # Create grader
+                grader = StudentGrader(student_name, lab_file, arg_generator, verbose=args.verbose)
 
-            # Run and grade
-            if args.verbose:
-                print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
-                print(f"{'─'*60}")
-                print("Real-time node output (color-coded):")
-                print(f"{'─'*60}")
-            else:
-                print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
-            grader.run_nodes("localhost", args.gcd_port, args.timeout)
+                # Run and grade
+                if args.verbose:
+                    print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
+                    print(f"{'─'*60}")
+                    print("Real-time node output (color-coded):")
+                    print(f"{'─'*60}")
+                else:
+                    print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
 
-            print("Analyzing output...")
-            result = grader.analyze_and_grade()
-            results[student_name] = result
+                run_success = grader.run_nodes("localhost", args.gcd_port, args.timeout)
 
-            # Print summary
-            print(f"\nResults for {student_name}:")
-            print(f"  Total Score: {result['total']}/{sum(POINTS.values())}")
-            if result['comments']:
-                print("  Comments:")
-                for comment in result['comments']:
-                    print(f"    {comment}")
-            if result['errors']:
-                print("  Errors:")
-                for error in result['errors']:
-                    print(f"    ❌ {error}")
+                if run_success:
+                    # No usage errors, proceed with grading
+                    success = True
+                    break
+                else:
+                    # Usage errors detected - prompt for manual input
+                    grader.stop_nodes()  # Clean up failed processes
+
+                    # Extract usage messages
+                    usage_lines = []
+                    for node_id, lines in grader.outputs.items():
+                        for _, line in lines:
+                            if 'usage:' in line.lower():
+                                usage_lines.append(line)
+                        if usage_lines:
+                            break  # Just need one example
+
+                    # Get attempted commands for display
+                    attempted_cmds = grader.get_attempted_commands()
+
+                    # Prompt user for correct template
+                    new_generator = prompt_for_template(student_name, usage_lines, attempted_cmds)
+
+                    if new_generator is None:
+                        # User chose to skip this student
+                        print(f"\n⏭️  Skipping {student_name}")
+                        results[student_name] = {
+                            "scores": {key: 0 for key in POINTS.keys()},
+                            "comments": [],
+                            "errors": ["Skipped - incorrect argument format"],
+                            "total": 0
+                        }
+                        break
+
+                    # Update arg_generator and retry
+                    arg_generator = new_generator
+                    print(f"\n🔄 Retrying with new argument format...")
+
+                    # Reset GCD
+                    gcd.stop()
+                    time.sleep(1)
+                    gcd.start()
+
+            if success:
+                print("Analyzing output...")
+                result = grader.analyze_and_grade()
+                results[student_name] = result
+
+                # Print summary
+                print(f"\nResults for {student_name}:")
+                print(f"  Total Score: {result['total']}/{sum(POINTS.values())}")
+                if result['comments']:
+                    print("  Comments:")
+                    for comment in result['comments']:
+                        print(f"    {comment}")
+                if result['errors']:
+                    print("  Errors:")
+                    for error in result['errors']:
+                        print(f"    ❌ {error}")
 
             # Reset GCD between students
             gcd.stop()
