@@ -495,16 +495,108 @@ def load_usage_patterns(folder_args_file="folder_args.md"):
     return usage_patterns
 
 
-def prompt_for_template(student_name, usage_output, attempted_commands):
+def prompt_for_argument_format(student_name, arg_generator, usage_text=None):
     """
-    Prompt user to provide argument template when auto-detection fails
+    Prompt user to confirm or provide argument template before grading
+
+    Returns: arg_generator function or None to skip
+    """
+    print(f"\n{'─'*60}")
+    print(f"📝 ARGUMENT FORMAT CONFIRMATION for {student_name}")
+    print(f"{'─'*60}")
+
+    # Show usage text if available
+    if usage_text:
+        print(f"\nDetected usage from folder_args.md:")
+        print(f"  {usage_text}")
+
+    # Generate sample command with current/auto-detected args
+    sample_args = None
+    if arg_generator:
+        try:
+            sample_args = arg_generator('localhost', 50000, 60000, 1234567, 100, '01-29')
+            print(f"\nAuto-detected argument format:")
+            print(f"  python3 lab2.py {' '.join(sample_args)}")
+        except:
+            print(f"\nNo auto-detected argument format available")
+    else:
+        print(f"\nNo auto-detected argument format available")
+        print(f"Default would be: python3 lab2.py localhost 50000 100 1234567")
+
+    print("\n" + "─"*60)
+    print("Available template variables:")
+    print("  {gcd_host}    - GCD server hostname")
+    print("  {gcd_port}    - GCD server port")
+    print("  {listen_port} - Node's listening port")
+    print("  {su_id}       - Student ID")
+    print("  {days}        - Days to birthday")
+    print("  {month_day}   - Birthday in MM-DD format")
+    print("\nCommon templates:")
+    print("  1. {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}")
+    print("  2. {gcd_host} {gcd_port} {su_id} {days}")
+    print("  3. {su_id} {days} {gcd_host} {gcd_port}")
+    print("  4. {days} {su_id} {gcd_host} {gcd_port}")
+    print("  5. {gcd_host} {gcd_port} {days} {su_id}")
+    print("\n" + "─"*60)
+
+    while True:
+        response = input("\nUse auto-detected format? (y/n/skip): ").strip().lower()
+
+        if response == 'skip':
+            return None
+
+        if response == 'y' or response == 'yes':
+            if arg_generator:
+                return arg_generator
+            else:
+                # Use default
+                return None
+
+        if response == 'n' or response == 'no':
+            # Ask for custom template
+            template = input("\nEnter custom template: ").strip()
+
+            if not template:
+                print("❌ Template cannot be empty. Try again.")
+                continue
+
+            # Validate template has at least some variables
+            if '{' not in template:
+                print("❌ Template should contain variables like {gcd_host}, {gcd_port}, etc.")
+                continue
+
+            # Try to create generator
+            try:
+                arg_gen = ArgumentParser.parse_template(template)
+                # Test it
+                test_args = arg_gen('localhost', 50000, 60000, 1234567, 100, '01-29')
+                print(f"\n✓ Template accepted. Test command:")
+                print(f"  python3 lab2.py {' '.join(test_args)}")
+
+                confirm = input("\nIs this correct? (y/n): ").strip().lower()
+                if confirm == 'y' or confirm == 'yes':
+                    return arg_gen
+                else:
+                    print("\nLet's try again...")
+                    continue
+
+            except Exception as e:
+                print(f"❌ Error with template: {e}")
+                continue
+        else:
+            print("❌ Please enter 'y' for yes, 'n' for no, or 'skip' to skip this student.")
+
+
+def prompt_for_template_on_error(student_name, usage_output, attempted_commands):
+    """
+    Prompt user to provide argument template when usage errors are detected
 
     Returns: arg_generator function or None to skip
     """
     print(f"\n{'!'*60}")
     print(f"⚠️  ARGUMENT FORMAT ERROR for {student_name}")
     print(f"{'!'*60}")
-    print("\nThe auto-detected argument format appears to be incorrect.")
+    print("\nThe provided argument format appears to be incorrect.")
     print("\nUsage message from student's code:")
     for line in usage_output:
         print(f"  {line}")
@@ -628,6 +720,30 @@ def main():
             usage_text = usage_patterns.get(student_name, "")
             arg_generator = ArgumentParser.parse_usage_line(usage_text)
 
+            # Always prompt user to confirm/change argument format
+            confirmed_generator = prompt_for_argument_format(student_name, arg_generator, usage_text)
+
+            if confirmed_generator is None and arg_generator is None:
+                # User chose to skip or no generator available
+                skip_response = input("\nNo argument format specified. Skip this student? (y/n): ").strip().lower()
+                if skip_response == 'y' or skip_response == 'yes':
+                    print(f"\n⏭️  Skipping {student_name}")
+                    results[student_name] = {
+                        "scores": {key: 0 for key in POINTS.keys()},
+                        "comments": [],
+                        "errors": ["Skipped - no argument format"],
+                        "total": 0
+                    }
+                    # Reset GCD
+                    gcd.stop()
+                    time.sleep(1)
+                    gcd.start()
+                    continue
+
+            # Use confirmed generator (or keep the auto-detected one if user said yes)
+            if confirmed_generator is not None:
+                arg_generator = confirmed_generator
+
             # Try grading, with retry if argument format is wrong
             success = False
             max_retries = 3
@@ -637,12 +753,12 @@ def main():
 
                 # Run and grade
                 if args.verbose:
-                    print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
+                    print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
                     print(f"{'─'*60}")
                     print("Real-time node output (color-coded):")
                     print(f"{'─'*60}")
                 else:
-                    print(f"Running {NUM_NODES} nodes for {args.timeout} seconds...")
+                    print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
 
                 run_success = grader.run_nodes("localhost", args.gcd_port, args.timeout)
 
@@ -667,7 +783,7 @@ def main():
                     attempted_cmds = grader.get_attempted_commands()
 
                     # Prompt user for correct template
-                    new_generator = prompt_for_template(student_name, usage_lines, attempted_cmds)
+                    new_generator = prompt_for_template_on_error(student_name, usage_lines, attempted_cmds)
 
                     if new_generator is None:
                         # User chose to skip this student
@@ -690,7 +806,7 @@ def main():
                     gcd.start()
 
             if success:
-                print("Analyzing output...")
+                print("\nAnalyzing output...")
                 result = grader.analyze_and_grade()
                 results[student_name] = result
 
