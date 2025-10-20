@@ -157,7 +157,8 @@ def main():
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                env={**os.environ, 'PYTHONUNBUFFERED': '1'}
             )
 
             processes.append((i, process))
