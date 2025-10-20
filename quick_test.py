@@ -147,26 +147,27 @@ def main():
             args = generate_args(usage_text, "localhost", GCD_PORT, listen_port,
                                su_id, days, month_day)
 
-            cmd = ["python3", str(lab_file)] + args
+            # Use -u flag for unbuffered Python output
+            cmd = ["python3", "-u", str(lab_file)] + args
 
-            print(f"Starting Node {i} (priority: {days} days, SU_ID: {su_id})")
-            print(f"  Command: {' '.join(cmd)}")
+            print(f"Starting Node {i} (priority: {days} days, SU_ID: {su_id})", flush=True)
+            print(f"  Command: {' '.join(cmd)}", flush=True)
 
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,
+                bufsize=0,  # Unbuffered
                 env={**os.environ, 'PYTHONUNBUFFERED': '1'}
             )
 
             processes.append((i, process))
             time.sleep(0.5)
 
-        print(f"\n{'='*60}")
-        print(f"All {num_nodes} nodes started. Monitoring output...")
-        print(f"{'='*60}\n")
+        print(f"\n{'='*60}", flush=True)
+        print(f"All {num_nodes} nodes started. Monitoring output...", flush=True)
+        print(f"{'='*60}\n", flush=True)
 
         # Monitor output from all processes
         start_time = time.time()
@@ -179,15 +180,15 @@ def main():
                 try:
                     line = process.stdout.readline()
                     if line:
-                        print(f"[Node {node_id}] {line.rstrip()}")
+                        print(f"[Node {node_id}] {line.rstrip()}", flush=True)
                 except:
                     pass
 
             time.sleep(0.1)
 
-        print(f"\n{'='*60}")
-        print(f"Test complete after {runtime} seconds")
-        print(f"{'='*60}\n")
+        print(f"\n{'='*60}", flush=True)
+        print(f"Test complete after {runtime} seconds", flush=True)
+        print(f"{'='*60}\n", flush=True)
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")

@@ -77,6 +77,51 @@ This shows:
 - 📨 **Cyan**: Election responses
 - Each line prefixed with `[NodeID|days|SU_ID]`
 
+### Manual Argument Input
+
+If the script detects incorrect arguments (usage messages from student code), it will automatically prompt you to provide the correct argument template:
+
+```
+⚠️  ARGUMENT FORMAT ERROR for student_name
+The auto-detected argument format appears to be incorrect.
+
+Usage message from student's code:
+  Usage: python3 lab1.py GCD_HOST GCD_PORT LISTEN_PORT SU_ID B-DAY(MM-DD)
+
+Attempted command (Node 0 example):
+  python3 ychoi4/lab2.py localhost 50000 100 1234567
+
+Please provide the correct argument template:
+
+Available variables:
+  {gcd_host}    - GCD server hostname
+  {gcd_port}    - GCD server port
+  {listen_port} - Node's listening port
+  {su_id}       - Student ID
+  {days}        - Days to birthday
+  {month_day}   - Birthday in MM-DD format
+
+Common templates:
+  1. {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}
+  2. {gcd_host} {gcd_port} {su_id} {days}
+  3. {su_id} {days} {gcd_host} {gcd_port}
+  4. {days} {su_id} {gcd_host} {gcd_port}
+
+Enter template (or 'skip' to skip this student): {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}
+
+✓ Template accepted. Test command:
+  python3 lab2.py localhost 50000 60000 1234567 100 01-29
+
+Is this correct? (y/n): y
+
+🔄 Retrying with new argument format...
+```
+
+You can:
+- Enter a custom template using the variables shown
+- Type `skip` to skip grading this student
+- The script will retry up to 3 times if needed
+
 ### Command-Line Options
 
 | Option | Default | Description |
