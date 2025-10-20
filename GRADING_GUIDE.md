@@ -77,23 +77,27 @@ This shows:
 - 📨 **Cyan**: Election responses
 - Each line prefixed with `[NodeID|days|SU_ID]`
 
-### Manual Argument Input
+### Interactive Argument Confirmation
 
-If the script detects incorrect arguments (usage messages from student code), it will automatically prompt you to provide the correct argument template:
+**The script now ALWAYS asks you to confirm or change the argument format before grading each student.** This ensures you have full control over the grading process.
+
+#### Initial Confirmation Prompt
+
+For each student, you'll see:
 
 ```
-⚠️  ARGUMENT FORMAT ERROR for student_name
-The auto-detected argument format appears to be incorrect.
+────────────────────────────────────────────────────────────
+📝 ARGUMENT FORMAT CONFIRMATION for ychoi4
+────────────────────────────────────────────────────────────
 
-Usage message from student's code:
+Detected usage from folder_args.md:
   Usage: python3 lab1.py GCD_HOST GCD_PORT LISTEN_PORT SU_ID B-DAY(MM-DD)
 
-Attempted command (Node 0 example):
-  python3 ychoi4/lab2.py localhost 50000 100 1234567
+Auto-detected argument format:
+  python3 lab2.py localhost 50000 60000 1234567 100 01-29
 
-Please provide the correct argument template:
-
-Available variables:
+────────────────────────────────────────────────────────────
+Available template variables:
   {gcd_host}    - GCD server hostname
   {gcd_port}    - GCD server port
   {listen_port} - Node's listening port
@@ -106,6 +110,43 @@ Common templates:
   2. {gcd_host} {gcd_port} {su_id} {days}
   3. {su_id} {days} {gcd_host} {gcd_port}
   4. {days} {su_id} {gcd_host} {gcd_port}
+  5. {gcd_host} {gcd_port} {days} {su_id}
+────────────────────────────────────────────────────────────
+
+Use auto-detected format? (y/n/skip):
+```
+
+**Options:**
+- **y** or **yes**: Use the auto-detected format and proceed
+- **n** or **no**: Provide a custom template
+- **skip**: Skip grading this student
+
+#### Providing Custom Template
+
+If you choose **n** (no):
+
+```
+Enter custom template: {gcd_host} {gcd_port} {su_id} {days}
+
+✓ Template accepted. Test command:
+  python3 lab2.py localhost 50000 1234567 100
+
+Is this correct? (y/n): y
+```
+
+#### Error Correction
+
+If the confirmed arguments are still incorrect (usage errors detected), you'll get a second chance:
+
+```
+⚠️  ARGUMENT FORMAT ERROR for ychoi4
+The provided argument format appears to be incorrect.
+
+Usage message from student's code:
+  Usage: python3 lab1.py GCD_HOST GCD_PORT LISTEN_PORT SU_ID B-DAY(MM-DD)
+
+Attempted command (Node 0 example):
+  python3 ychoi4/lab2.py localhost 50000 1234567 100
 
 Enter template (or 'skip' to skip this student): {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}
 
@@ -117,10 +158,44 @@ Is this correct? (y/n): y
 🔄 Retrying with new argument format...
 ```
 
-You can:
-- Enter a custom template using the variables shown
-- Type `skip` to skip grading this student
-- The script will retry up to 3 times if needed
+**Benefits:**
+- Full control over argument format for each student
+- See the exact command that will be used before running
+- Can verify against student's usage message
+- Option to skip problematic students
+- Automatic retry if format is still wrong
+
+### Parallel Grading Mode
+
+Grade multiple students simultaneously for **much faster grading**:
+
+```bash
+python3 grade_bully.py --parallel --max-parallel 4
+```
+
+**How it works:**
+- Each student gets their own GCD server on a separate port
+- Students are graded in parallel using multiprocessing
+- Significantly faster when grading many students
+- Output from all processes shown in real-time
+
+**Example:**
+```bash
+# Grade 4 students in parallel
+python3 grade_bully.py --students ychoi4,ncrouch,pdesai1,mkumar1 --parallel --timeout 20
+
+🚀 PARALLEL MODE: Grading students in parallel (max 4 at a time)
+   Each student will have their own GCD server on separate ports
+
+[Process 12345] Grading: ychoi4 - Using GCD port: 50000
+[Process 12346] Grading: ncrouch - Using GCD port: 50001
+[Process 12347] Grading: pdesai1 - Using GCD port: 50002
+[Process 12348] Grading: mkumar1 - Using GCD port: 50003
+...
+✓ Parallel grading complete!
+```
+
+**Note:** Interactive error prompts are disabled in parallel mode. Make sure arguments are correct before running.
 
 ### Command-Line Options
 
@@ -128,10 +203,12 @@ You can:
 |--------|---------|-------------|
 | `--students` | all | Comma-separated list of student names to grade |
 | `--timeout` | 30 | Runtime per student in seconds |
-| `--gcd-port` | 50000 | Port for GCD server |
+| `--gcd-port` | 50000 | Starting GCD port (increments for each student in parallel mode) |
 | `--output` | `grading_results.json` | Output JSON file path |
 | `--base-dir` | `.` | Base directory containing student folders |
 | `--verbose`, `-v` | off | Show real-time output with color-coded events |
+| `--parallel`, `-p` | off | Grade all students in parallel with separate GCD servers |
+| `--max-parallel` | 4 | Maximum number of students to grade in parallel |
 
 ## Grading Criteria
 
@@ -154,10 +231,14 @@ The script evaluates submissions based on the following criteria:
 ### 1. Node Simulation
 
 For each student, the script launches 4 nodes with different priorities:
-- Node 0: (100 days, SU_ID: 1234567) - Lowest priority
-- Node 1: (50 days, SU_ID: 2345678) - Medium priority
-- Node 2: (200 days, SU_ID: 3456789) - Higher priority
-- Node 3: (150 days, SU_ID: 4567890) - Highest priority
+- Node 0: (100 days, SU_ID: 1234567) - Priority 1
+- Node 1: (200 days, SU_ID: 2345678) - Priority 2
+- Node 2: (300 days, SU_ID: 3456789) - Priority 3
+- Node 3: (50 days, SU_ID: 4567890) - Priority 4 (highest priority - becomes leader)
+
+**Validation:** All values are validated to ensure:
+- Student IDs are in range [1,000,000 - 9,999,999]
+- Days to birthday are in range [0 - 365]
 
 ### 2. Argument Pattern Detection
 
