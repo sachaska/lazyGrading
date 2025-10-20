@@ -162,9 +162,10 @@ class StudentGrader:
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Redirect stderr to stdout
                     text=True,
-                    bufsize=1
+                    bufsize=1,
+                    env={**os.environ, 'PYTHONUNBUFFERED': '1'}  # Disable Python buffering
                 )
 
                 self.processes.append(process)
@@ -190,15 +191,13 @@ class StudentGrader:
     def _collect_output(self, process, node_id):
         """Collect stdout/stderr from a process"""
         try:
-            for line in process.stdout:
-                self.outputs[node_id].append(('stdout', line.strip()))
-        except:
-            pass
-
-        try:
-            for line in process.stderr:
-                self.outputs[node_id].append(('stderr', line.strip()))
-        except:
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    self.outputs[node_id].append(('output', line.strip()))
+        except Exception as e:
             pass
 
     def stop_nodes(self):
