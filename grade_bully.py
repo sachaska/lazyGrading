@@ -158,14 +158,15 @@ class StudentGrader:
                     # Default argument order
                     args = [gcd_host, str(gcd_port), str(days), str(su_id)]
 
-                cmd = ["python3", self.lab_file] + args
+                # Use -u flag for unbuffered Python output
+                cmd = ["python3", "-u", self.lab_file] + args
 
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,  # Redirect stderr to stdout
                     text=True,
-                    bufsize=1,
+                    bufsize=0,  # Unbuffered
                     env={**os.environ, 'PYTHONUNBUFFERED': '1'}  # Disable Python buffering
                 )
 
@@ -226,32 +227,33 @@ class StudentGrader:
 
         # Highlight important events
         if 'election' in line_lower and 'started' in line_lower:
-            print(f"{BOLD}{YELLOW}{node_label} 🗳️  {line}{RESET}")
+            print(f"{BOLD}{YELLOW}{node_label} 🗳️  {line}{RESET}", flush=True)
         elif 'i_am_leader' in line_lower or 'become leader' in line_lower:
-            print(f"{BOLD}{GREEN}{node_label} 👑 {line}{RESET}")
+            print(f"{BOLD}{GREEN}{node_label} 👑 {line}{RESET}", flush=True)
         elif 'new leader' in line_lower:
-            print(f"{BOLD}{GREEN}{node_label} ✓  {line}{RESET}")
+            print(f"{BOLD}{GREEN}{node_label} ✓  {line}{RESET}", flush=True)
         elif 'elect' in line_lower and 'response' in line_lower:
-            print(f"{CYAN}{node_label} 📨 {line}{RESET}")
+            print(f"{CYAN}{node_label} 📨 {line}{RESET}", flush=True)
         elif 'elect' in line_lower:
-            print(f"{BLUE}{node_label} 🗳️  {line}{RESET}")
+            print(f"{BLUE}{node_label} 🗳️  {line}{RESET}", flush=True)
         elif 'probe' in line_lower and 'failed' in line_lower:
-            print(f"{RED}{node_label} ❌ {line}{RESET}")
+            print(f"{RED}{node_label} ❌ {line}{RESET}", flush=True)
         elif 'probe' in line_lower:
-            print(f"{CYAN}{node_label} 🔍 {line}{RESET}")
+            print(f"{CYAN}{node_label} 🔍 {line}{RESET}", flush=True)
         elif 'fail' in line_lower and 'simulat' in line_lower:
-            print(f"{RED}{node_label} 💀 {line}{RESET}")
+            print(f"{RED}{node_label} 💀 {line}{RESET}", flush=True)
         elif 'recover' in line_lower:
-            print(f"{GREEN}{node_label} 💚 {line}{RESET}")
+            print(f"{GREEN}{node_label} 💚 {line}{RESET}", flush=True)
         elif 'join' in line_lower or 'howdy' in line_lower:
-            print(f"{MAGENTA}{node_label} 🤝 {line}{RESET}")
+            print(f"{MAGENTA}{node_label} 🤝 {line}{RESET}", flush=True)
         elif 'listen' in line_lower or 'port' in line_lower:
-            print(f"{MAGENTA}{node_label} 👂 {line}{RESET}")
+            print(f"{MAGENTA}{node_label} 👂 {line}{RESET}", flush=True)
         elif 'error' in line_lower or 'exception' in line_lower:
-            print(f"{RED}{node_label} ⚠️  {line}{RESET}")
+            print(f"{RED}{node_label} ⚠️  {line}{RESET}", flush=True)
         else:
             # Regular output
-            print(f"{node_label} {line}")
+            print(f"{node_label} {line}", flush=True)
+
 
 
     def stop_nodes(self):
