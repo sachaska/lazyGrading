@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Grading Script for Lab2: Bully Algorithm
+Test Script for Lab2: Bully Algorithm
 Distributed Systems Class
 
 This script:
 1. Starts a GCD server
 2. Launches multiple instances of each student's submission
 3. Monitors their behavior and communication
-4. Grades based on Bully Algorithm requirements
-5. Generates a JSON grading log
+4. Saves output logs for each node
 
 Usage:
     python3 grade_bully.py [--students student1,student2,...] [--timeout 30]
@@ -23,7 +22,7 @@ import sys
 import time
 import threading
 import signal
-import multiprocessing
+import socket
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
@@ -40,26 +39,14 @@ VALID_SU_ID_MAX = 9999999
 VALID_DAYS_MIN = 0
 VALID_DAYS_MAX = 365
 
-# Grading criteria points
-POINTS = {
-    "process_startup": 5,
-    "gcd_join": 10,
-    "listens_properly": 5,
-    "election_participation": 20,
-    "leader_consensus": 15,
-    "message_handling": 5,
-    "probe_handling": 5,  # Extra credit
-    "failure_simulation": 5,  # Extra credit
-}
-
-# Test node configurations (days_to_birthday, su_id, month_day)
+# Test node configurations (days_to_birthday, su_id, month_day, month_day_year)
 # These create different priorities for the Bully algorithm
 # All values validated: su_id in [1000000, 9999999], days in [0, 365]
 NODE_CONFIGS = [
-    (100, 1234567, "01-29"),  # Priority 1 (lower days = higher priority in bully)
-    (200, 2345678, "12-11"),  # Priority 2
-    (300, 3456789, "07-09"),  # Priority 3
-    (50, 4567890, "03-20"),   # Priority 4 (highest priority - will be leader)
+    (100, 1234567, "01-29", "01-29-2026"),  # Priority 1 (lower days = higher priority in bully)
+    (200, 2345678, "12-11", "12-11-2025"),  # Priority 2
+    (300, 3456789, "07-09", "07-09-2026"),  # Priority 3
+    (50, 4567890, "03-20", "03-20-2026"),   # Priority 4 (highest priority - will be leader)
 ]
 
 def validate_node_config(days, su_id):
@@ -71,8 +58,18 @@ def validate_node_config(days, su_id):
     return True
 
 # Validate NODE_CONFIGS on module load
-for days, su_id, _ in NODE_CONFIGS:
+for days, su_id, _, _ in NODE_CONFIGS:
     validate_node_config(days, su_id)
+
+
+def is_port_in_use(port):
+    """Check if a port is already in use"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('', port))
+            return False
+        except socket.error:
+            return True
 
 
 class ArgumentParser:
@@ -90,10 +87,11 @@ class ArgumentParser:
         - {su_id} or {suid}
         - {days} or {bday}
         - {month_day} (MM-DD format)
+        - {month_day_year} (MM-DD-YYYY format)
 
         Example: "{gcd_host} {gcd_port} {listen_port} {su_id} {month_day}"
         """
-        def generator(gcd_host, gcd_port, listen_port, su_id, bday, month_day):
+        def generator(gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year):
             result = template
             # Replace all possible variables
             replacements = {
@@ -107,6 +105,7 @@ class ArgumentParser:
                 '{days}': str(bday),
                 '{bday}': str(bday),
                 '{month_day}': month_day,
+                '{month_day_year}': month_day_year,
             }
             for key, value in replacements.items():
                 result = result.replace(key, value)
@@ -129,54 +128,54 @@ class ArgumentParser:
 
         # Pattern matching for different argument formats
         patterns = [
-            # Pattern: GCD_HOST GCD_PORT LISTEN_PORT SU_ID B-DAY
+            # Pattern: GCD_HOST GCD_PORT LISTEN_PORT SU_ID B-DAY (MM-DD or MM-DD-YYYY)
             (r'gcd.*host.*gcd.*port.*listen.*su.*id.*b.*day',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
-                [gcd_host, str(gcd_port), str(listen_port), str(su_id), month_day]),
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
+                [gcd_host, str(gcd_port), str(listen_port), str(su_id), month_day_year]),
 
             # Pattern: SU_ID days_to_bday GCD_HOST GCD_PORT
             (r'su.*id.*day.*gcd.*host.*gcd.*port',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [str(su_id), str(bday), gcd_host, str(gcd_port)]),
 
             # Pattern: days_to_bday SU_ID GCD_HOST GCD_PORT
             (r'day.*su.*id.*host.*port',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [str(bday), str(su_id), gcd_host, str(gcd_port)]),
 
             # Pattern: GCD_HOST GCD_PORT SU_ID days_to_bday
             (r'gcd.*host.*gcd.*port.*su.*id.*day|gcd.*host.*gcd.*port.*student.*id.*birth',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [gcd_host, str(gcd_port), str(su_id), str(bday)]),
 
             # Pattern: GCD_HOST GCD_PORT days_to_bday SU_ID
             (r'gcd.*host.*gcd.*port.*day.*su.*id|gcd.*host.*gcd.*port.*n.*day.*student',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [gcd_host, str(gcd_port), str(bday), str(su_id)]),
 
             # Pattern: BDAY SUID HOST PORT
             (r'bday.*suid.*host.*port',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [str(bday), str(su_id), gcd_host, str(gcd_port)]),
 
             # Pattern: GCD_HOST GCD_PORT (minimal args)
             (r'gcd.*host.*gcd.*port$',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [gcd_host, str(gcd_port)]),
 
             # Pattern: SU_ID month day [gcd_host] [gcd_port]
             (r'su.*id.*month.*day',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [str(su_id)] + month_day.split('-') + [gcd_host, str(gcd_port)]),
 
-            # Pattern: GCD_HOST GCD_PORT SU_ID MOM_BDAY_MM-DD
-            (r'gcd.*host.*gcd.*port.*su.*id.*mom.*bday.*mm.*dd',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
-                [gcd_host, str(gcd_port), str(su_id), month_day]),
+            # Pattern: GCD_HOST GCD_PORT SU_ID MOM_BDAY_MM-DD or MM-DD-YYYY
+            (r'gcd.*host.*gcd.*port.*su.*id.*mom.*bday|gcd.*host.*gcd.*port.*su.*id.*birthdate',
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
+                [gcd_host, str(gcd_port), str(su_id), month_day_year]),
 
             # Pattern: GCD_HOST GCD_PORT BIRTH_MONTH BIRTH_DAY SU_ID
             (r'gcd.*host.*gcd.*port.*birth.*month.*birth.*day.*su.*id',
-             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day:
+             lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year:
                 [gcd_host, str(gcd_port)] + month_day.split('-') + [str(su_id)]),
         ]
 
@@ -185,36 +184,53 @@ class ArgumentParser:
                 return arg_func
 
         # Default fallback: assume GCD_HOST GCD_PORT days SU_ID
-        return lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day: \
+        return lambda gcd_host, gcd_port, listen_port, su_id, bday, month_day, month_day_year: \
             [gcd_host, str(gcd_port), str(bday), str(su_id)]
 
 
-class StudentGrader:
-    """Grades a single student's submission"""
+class StudentTester:
+    """Tests a single student's submission and captures output"""
 
-    def __init__(self, student_name, lab_file, arg_generator, verbose=False):
+    def __init__(self, student_name, lab_file, arg_generator, student_dir, verbose=False):
         self.student_name = student_name
         self.lab_file = lab_file
         self.arg_generator = arg_generator
+        self.student_dir = student_dir
         self.verbose = verbose
         self.processes = []
         self.outputs = defaultdict(list)
-        self.scores = {key: 0 for key in POINTS.keys()}
-        self.comments = []
         self.errors = []
+        self.log_files = {}
 
     def run_nodes(self, gcd_host, gcd_port, runtime):
         """Launch multiple node instances for this student"""
-        for i, (days, su_id, month_day) in enumerate(NODE_CONFIGS):
+        for i, (days, su_id, month_day, month_day_year) in enumerate(NODE_CONFIGS):
             listen_port = BASE_LISTEN_PORT + i
 
             try:
                 if self.arg_generator:
                     args = self.arg_generator(gcd_host, gcd_port, listen_port,
-                                             su_id, days, month_day)
+                                             su_id, days, month_day, month_day_year)
                 else:
                     # Default argument order
                     args = [gcd_host, str(gcd_port), str(days), str(su_id)]
+
+                # Setup log file for this node
+                log_file_path = os.path.join(self.student_dir, f"node{i}.log")
+                self.log_files[i] = open(log_file_path, 'w')
+
+                # Write header to log file
+                self.log_files[i].write(f"Node {i} Log\n")
+                self.log_files[i].write(f"={'='*60}\n")
+                self.log_files[i].write(f"Configuration:\n")
+                self.log_files[i].write(f"  Days to birthday: {days}\n")
+                self.log_files[i].write(f"  Student ID: {su_id}\n")
+                self.log_files[i].write(f"  Month-Day: {month_day}\n")
+                self.log_files[i].write(f"  Month-Day-Year: {month_day_year}\n")
+                self.log_files[i].write(f"  Listen port: {listen_port}\n")
+                self.log_files[i].write(f"Command: python3 {self.lab_file} {' '.join(args)}\n")
+                self.log_files[i].write(f"={'='*60}\n\n")
+                self.log_files[i].flush()
 
                 # Use -u flag for unbuffered Python output
                 cmd = ["python3", "-u", self.lab_file] + args
@@ -240,7 +256,11 @@ class StudentGrader:
                 time.sleep(0.5)  # Stagger startup
 
             except Exception as e:
-                self.errors.append(f"Failed to start node {i}: {str(e)}")
+                error_msg = f"Failed to start node {i}: {str(e)}"
+                self.errors.append(error_msg)
+                if i in self.log_files:
+                    self.log_files[i].write(f"\nERROR: {error_msg}\n")
+                    self.log_files[i].flush()
 
         # Let them run briefly to detect usage errors
         time.sleep(2)
@@ -260,17 +280,20 @@ class StudentGrader:
         """Check if processes are outputting usage messages (incorrect arguments)"""
         for node_id, lines in self.outputs.items():
             for _, line in lines:
-                if 'usage:' in line.lower() and ('python' in line.lower() or 'lab' in line.lower()):
+                line_lower = line.lower()
+                # More comprehensive usage detection
+                if ('usage:' in line_lower or 'error:' in line_lower) and \
+                   ('python' in line_lower or 'lab' in line_lower or 'argument' in line_lower):
                     return True
         return False
 
     def get_attempted_commands(self):
         """Get the commands that were attempted for debugging"""
         commands = []
-        for i, (days, su_id, month_day) in enumerate(NODE_CONFIGS):
+        for i, (days, su_id, month_day, month_day_year) in enumerate(NODE_CONFIGS):
             listen_port = BASE_LISTEN_PORT + i
             if self.arg_generator:
-                args = self.arg_generator('localhost', 50000, listen_port, su_id, days, month_day)
+                args = self.arg_generator('localhost', 50000, listen_port, su_id, days, month_day, month_day_year)
             else:
                 args = ['localhost', '50000', str(days), str(su_id)]
             cmd = f"python3 {self.lab_file} {' '.join(args)}"
@@ -278,7 +301,7 @@ class StudentGrader:
         return commands
 
     def _collect_output(self, process, node_id):
-        """Collect stdout/stderr from a process"""
+        """Collect stdout/stderr from a process and write to log file"""
         try:
             while True:
                 line = process.stdout.readline()
@@ -286,18 +309,27 @@ class StudentGrader:
                     break
                 if line:
                     stripped_line = line.strip()
+                    timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
                     self.outputs[node_id].append(('output', stripped_line))
+
+                    # Write to log file
+                    if node_id in self.log_files:
+                        self.log_files[node_id].write(f"[{timestamp}] {stripped_line}\n")
+                        self.log_files[node_id].flush()
 
                     # Print real-time output in verbose mode
                     if self.verbose and stripped_line:
                         self._print_node_output(node_id, stripped_line)
         except Exception as e:
-            pass
+            error_msg = f"Error collecting output for node {node_id}: {str(e)}"
+            if node_id in self.log_files:
+                self.log_files[node_id].write(f"\nERROR: {error_msg}\n")
+                self.log_files[node_id].flush()
 
     def _print_node_output(self, node_id, line):
         """Print formatted node output with highlighting for important events"""
         # Get node info
-        days, su_id, month_day = NODE_CONFIGS[node_id]
+        days, su_id, month_day, month_day_year = NODE_CONFIGS[node_id]
         node_label = f"[Node{node_id}|{days}d|{su_id}]"
 
         # Color codes (ANSI)
@@ -314,29 +346,29 @@ class StudentGrader:
 
         # Highlight important events
         if 'election' in line_lower and 'started' in line_lower:
-            print(f"{BOLD}{YELLOW}{node_label} 🗳️  {line}{RESET}", flush=True)
+            print(f"{BOLD}{YELLOW}{node_label} ELECTION: {line}{RESET}", flush=True)
         elif 'i_am_leader' in line_lower or 'become leader' in line_lower:
-            print(f"{BOLD}{GREEN}{node_label} 👑 {line}{RESET}", flush=True)
+            print(f"{BOLD}{GREEN}{node_label} LEADER: {line}{RESET}", flush=True)
         elif 'new leader' in line_lower:
-            print(f"{BOLD}{GREEN}{node_label} ✓  {line}{RESET}", flush=True)
+            print(f"{BOLD}{GREEN}{node_label} NEW LEADER: {line}{RESET}", flush=True)
         elif 'elect' in line_lower and 'response' in line_lower:
-            print(f"{CYAN}{node_label} 📨 {line}{RESET}", flush=True)
+            print(f"{CYAN}{node_label} ELECT RESPONSE: {line}{RESET}", flush=True)
         elif 'elect' in line_lower:
-            print(f"{BLUE}{node_label} 🗳️  {line}{RESET}", flush=True)
+            print(f"{BLUE}{node_label} ELECT: {line}{RESET}", flush=True)
         elif 'probe' in line_lower and 'failed' in line_lower:
-            print(f"{RED}{node_label} ❌ {line}{RESET}", flush=True)
+            print(f"{RED}{node_label} PROBE FAILED: {line}{RESET}", flush=True)
         elif 'probe' in line_lower:
-            print(f"{CYAN}{node_label} 🔍 {line}{RESET}", flush=True)
+            print(f"{CYAN}{node_label} PROBE: {line}{RESET}", flush=True)
         elif 'fail' in line_lower and 'simulat' in line_lower:
-            print(f"{RED}{node_label} 💀 {line}{RESET}", flush=True)
+            print(f"{RED}{node_label} FAILURE: {line}{RESET}", flush=True)
         elif 'recover' in line_lower:
-            print(f"{GREEN}{node_label} 💚 {line}{RESET}", flush=True)
+            print(f"{GREEN}{node_label} RECOVER: {line}{RESET}", flush=True)
         elif 'join' in line_lower or 'howdy' in line_lower:
-            print(f"{MAGENTA}{node_label} 🤝 {line}{RESET}", flush=True)
+            print(f"{MAGENTA}{node_label} JOIN: {line}{RESET}", flush=True)
         elif 'listen' in line_lower or 'port' in line_lower:
-            print(f"{MAGENTA}{node_label} 👂 {line}{RESET}", flush=True)
+            print(f"{MAGENTA}{node_label} LISTEN: {line}{RESET}", flush=True)
         elif 'error' in line_lower or 'exception' in line_lower:
-            print(f"{RED}{node_label} ⚠️  {line}{RESET}", flush=True)
+            print(f"{RED}{node_label} ERROR: {line}{RESET}", flush=True)
         else:
             # Regular output
             print(f"{node_label} {line}", flush=True)
@@ -355,80 +387,23 @@ class StudentGrader:
                 except:
                     pass
 
-    def analyze_and_grade(self):
-        """Analyze collected output and assign grades"""
+        # Close all log files
+        for node_id, log_file in self.log_files.items():
+            try:
+                log_file.write(f"\n{'='*60}\n")
+                log_file.write(f"Node stopped at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.close()
+            except:
+                pass
 
-        # Combine all output
-        all_output = []
-        for node_id, lines in self.outputs.items():
-            all_output.extend([line[1] for line in lines])
-
-        output_text = '\n'.join(all_output).lower()
-
-        # Check process startup
-        if len(self.processes) > 0 and not self.errors:
-            self.scores["process_startup"] = POINTS["process_startup"]
-            self.comments.append("✓ Process started")
-        else:
-            self.errors.append("Process failed to start")
-
-        # Check GCD join
-        if re.search(r'join|howdy|gcd', output_text):
-            self.scores["gcd_join"] = POINTS["gcd_join"]
-            self.comments.append("✓ GCD join detected")
-        else:
-            self.errors.append("No GCD join detected")
-
-        # Check listening
-        port_match = re.search(r'(port|listen).*?(\d{5})', output_text)
-        if port_match or re.search(r'listen|server', output_text):
-            self.scores["listens_properly"] = POINTS["listens_properly"]
-            if port_match:
-                self.comments.append(f"✓ Port {port_match.group(2)}")
-            else:
-                self.comments.append("✓ Listening server started")
-
-        # Check election participation
-        elect_count = len(re.findall(r'elect', output_text))
-        if elect_count >= 2:
-            self.scores["election_participation"] = POINTS["election_participation"]
-            self.comments.append(f"✓ ELECT messages ({elect_count} occurrences)")
-        elif elect_count == 1:
-            self.scores["election_participation"] = POINTS["election_participation"] // 2
-            self.comments.append("⚠ Limited election participation")
-        else:
-            self.errors.append("No ELECT messages detected")
-
-        # Check leader consensus
-        leader_count = len(re.findall(r'leader|i_am_leader', output_text))
-        if leader_count >= 1:
-            self.scores["leader_consensus"] = POINTS["leader_consensus"]
-            self.comments.append(f"✓ Leader consensus ({leader_count} occurrences)")
-        else:
-            self.errors.append("No leader consensus detected")
-
-        # Check message handling (GOT_IT responses)
-        if re.search(r'got_it|response|recv', output_text):
-            self.scores["message_handling"] = POINTS["message_handling"]
-            self.comments.append("✓ Message handling detected")
-
-        # Extra Credit: PROBE handling
-        probe_count = len(re.findall(r'probe', output_text))
-        if probe_count >= 2:
-            self.scores["probe_handling"] = POINTS["probe_handling"]
-            self.comments.append(f"✓ EC: PROBE handling ({probe_count} occurrences)")
-
-        # Extra Credit: Failure simulation
-        failure_count = len(re.findall(r'fail|recover', output_text))
-        if failure_count >= 2:
-            self.scores["failure_simulation"] = POINTS["failure_simulation"]
-            self.comments.append(f"✓ EC: Failure simulation ({failure_count} occurrences)")
-
+    def get_summary(self):
+        """Get a summary of the test run"""
         return {
-            "scores": self.scores,
-            "comments": self.comments,
+            "student": self.student_name,
+            "nodes_started": len(self.processes),
             "errors": self.errors,
-            "total": sum(self.scores.values())
+            "log_files": [f"node{i}.log" for i in self.log_files.keys()],
+            "timestamp": datetime.now().isoformat()
         }
 
 
@@ -442,6 +417,16 @@ class GCDServer:
 
     def start(self):
         """Start the GCD server"""
+        # Check if port is already in use
+        if is_port_in_use(self.port):
+            print(f"WARNING: Port {self.port} is already in use!")
+            response = input(f"Do you want to try to use the existing service on port {self.port}? (y/n): ").strip().lower()
+            if response == 'y' or response == 'yes':
+                print(f"Will attempt to use existing service on port {self.port}")
+                return True
+            else:
+                raise Exception(f"Port {self.port} is already in use. Please choose a different port or stop the existing service.")
+
         try:
             self.process = subprocess.Popen(
                 ["python3", self.gcd_script, str(self.port)],
@@ -485,7 +470,10 @@ def find_student_submissions(base_dir="."):
                 lab_file = student_dir / "Lab2.py"
 
             if lab_file.exists():
-                submissions[student_dir.name] = str(lab_file)
+                submissions[student_dir.name] = {
+                    'lab_file': str(lab_file),
+                    'student_dir': str(student_dir)
+                }
 
     return submissions
 
@@ -517,13 +505,13 @@ def load_usage_patterns(folder_args_file="folder_args.md"):
 
 def prompt_for_argument_format(student_name, arg_generator, usage_text=None):
     """
-    Prompt user to confirm or provide argument template before grading
+    Prompt user to confirm or provide argument template before testing
 
     Returns: arg_generator function or None to skip
     """
-    print(f"\n{'─'*60}")
-    print(f"📝 ARGUMENT FORMAT CONFIRMATION for {student_name}")
-    print(f"{'─'*60}")
+    print(f"\n{'-'*60}")
+    print(f"ARGUMENT FORMAT CONFIRMATION for {student_name}")
+    print(f"{'-'*60}")
 
     # Show usage text if available
     if usage_text:
@@ -534,7 +522,7 @@ def prompt_for_argument_format(student_name, arg_generator, usage_text=None):
     sample_args = None
     if arg_generator:
         try:
-            sample_args = arg_generator('localhost', 50000, 60000, 1234567, 100, '01-29')
+            sample_args = arg_generator('localhost', 50000, 60000, 1234567, 100, '01-29', '01-29-2026')
             print(f"\nAuto-detected argument format:")
             print(f"  python3 lab2.py {' '.join(sample_args)}")
         except:
@@ -543,21 +531,23 @@ def prompt_for_argument_format(student_name, arg_generator, usage_text=None):
         print(f"\nNo auto-detected argument format available")
         print(f"Default would be: python3 lab2.py localhost 50000 100 1234567")
 
-    print("\n" + "─"*60)
+    print("\n" + "-"*60)
     print("Available template variables:")
-    print("  {gcd_host}    - GCD server hostname")
-    print("  {gcd_port}    - GCD server port")
-    print("  {listen_port} - Node's listening port")
-    print("  {su_id}       - Student ID")
-    print("  {days}        - Days to birthday")
-    print("  {month_day}   - Birthday in MM-DD format")
+    print("  {gcd_host}       - GCD server hostname")
+    print("  {gcd_port}       - GCD server port")
+    print("  {listen_port}    - Node's listening port")
+    print("  {su_id}          - Student ID")
+    print("  {days}           - Days to birthday")
+    print("  {month_day}      - Birthday in MM-DD format")
+    print("  {month_day_year} - Birthday in MM-DD-YYYY format")
     print("\nCommon templates:")
     print("  1. {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}")
     print("  2. {gcd_host} {gcd_port} {su_id} {days}")
     print("  3. {su_id} {days} {gcd_host} {gcd_port}")
     print("  4. {days} {su_id} {gcd_host} {gcd_port}")
     print("  5. {gcd_host} {gcd_port} {days} {su_id}")
-    print("\n" + "─"*60)
+    print("  6. {gcd_host} {gcd_port} {su_id} {month_day_year}")
+    print("\n" + "-"*60)
 
     while True:
         response = input("\nUse auto-detected format? (y/n/skip): ").strip().lower()
@@ -577,20 +567,20 @@ def prompt_for_argument_format(student_name, arg_generator, usage_text=None):
             template = input("\nEnter custom template: ").strip()
 
             if not template:
-                print("❌ Template cannot be empty. Try again.")
+                print("ERROR: Template cannot be empty. Try again.")
                 continue
 
             # Validate template has at least some variables
             if '{' not in template:
-                print("❌ Template should contain variables like {gcd_host}, {gcd_port}, etc.")
+                print("ERROR: Template should contain variables like {gcd_host}, {gcd_port}, etc.")
                 continue
 
             # Try to create generator
             try:
                 arg_gen = ArgumentParser.parse_template(template)
                 # Test it
-                test_args = arg_gen('localhost', 50000, 60000, 1234567, 100, '01-29')
-                print(f"\n✓ Template accepted. Test command:")
+                test_args = arg_gen('localhost', 50000, 60000, 1234567, 100, '01-29', '01-29-2026')
+                print(f"\nTemplate accepted. Test command:")
                 print(f"  python3 lab2.py {' '.join(test_args)}")
 
                 confirm = input("\nIs this correct? (y/n): ").strip().lower()
@@ -601,10 +591,10 @@ def prompt_for_argument_format(student_name, arg_generator, usage_text=None):
                     continue
 
             except Exception as e:
-                print(f"❌ Error with template: {e}")
+                print(f"ERROR: Error with template: {e}")
                 continue
         else:
-            print("❌ Please enter 'y' for yes, 'n' for no, or 'skip' to skip this student.")
+            print("ERROR: Please enter 'y' for yes, 'n' for no, or 'skip' to skip this student.")
 
 
 def prompt_for_template_on_error(student_name, usage_output, attempted_commands):
@@ -614,7 +604,7 @@ def prompt_for_template_on_error(student_name, usage_output, attempted_commands)
     Returns: arg_generator function or None to skip
     """
     print(f"\n{'!'*60}")
-    print(f"⚠️  ARGUMENT FORMAT ERROR for {student_name}")
+    print(f"ARGUMENT FORMAT ERROR for {student_name}")
     print(f"{'!'*60}")
     print("\nThe provided argument format appears to be incorrect.")
     print("\nUsage message from student's code:")
@@ -625,21 +615,23 @@ def prompt_for_template_on_error(student_name, usage_output, attempted_commands)
     if attempted_commands:
         print(f"  {attempted_commands[0]}")
 
-    print("\n" + "─"*60)
+    print("\n" + "-"*60)
     print("Please provide the correct argument template:")
     print("\nAvailable variables:")
-    print("  {gcd_host}    - GCD server hostname")
-    print("  {gcd_port}    - GCD server port")
-    print("  {listen_port} - Node's listening port")
-    print("  {su_id}       - Student ID")
-    print("  {days}        - Days to birthday")
-    print("  {month_day}   - Birthday in MM-DD format")
+    print("  {gcd_host}       - GCD server hostname")
+    print("  {gcd_port}       - GCD server port")
+    print("  {listen_port}    - Node's listening port")
+    print("  {su_id}          - Student ID")
+    print("  {days}           - Days to birthday")
+    print("  {month_day}      - Birthday in MM-DD format")
+    print("  {month_day_year} - Birthday in MM-DD-YYYY format")
     print("\nCommon templates:")
     print("  1. {gcd_host} {gcd_port} {listen_port} {su_id} {month_day}")
     print("  2. {gcd_host} {gcd_port} {su_id} {days}")
     print("  3. {su_id} {days} {gcd_host} {gcd_port}")
     print("  4. {days} {su_id} {gcd_host} {gcd_port}")
-    print("\n" + "─"*60)
+    print("  5. {gcd_host} {gcd_port} {su_id} {month_day_year}")
+    print("\n" + "-"*60)
 
     while True:
         template = input("\nEnter template (or 'skip' to skip this student): ").strip()
@@ -648,20 +640,20 @@ def prompt_for_template_on_error(student_name, usage_output, attempted_commands)
             return None
 
         if not template:
-            print("❌ Template cannot be empty. Try again.")
+            print("ERROR: Template cannot be empty. Try again.")
             continue
 
         # Validate template has at least some variables
         if '{' not in template:
-            print("❌ Template should contain variables like {gcd_host}, {gcd_port}, etc.")
+            print("ERROR: Template should contain variables like {gcd_host}, {gcd_port}, etc.")
             continue
 
         # Try to create generator
         try:
             arg_gen = ArgumentParser.parse_template(template)
             # Test it
-            test_args = arg_gen('localhost', 50000, 60000, 1234567, 100, '01-29')
-            print(f"\n✓ Template accepted. Test command:")
+            test_args = arg_gen('localhost', 50000, 60000, 1234567, 100, '01-29', '01-29-2026')
+            print(f"\nTemplate accepted. Test command:")
             print(f"  python3 lab2.py {' '.join(test_args)}")
 
             confirm = input("\nIs this correct? (y/n): ").strip().lower()
@@ -672,129 +664,23 @@ def prompt_for_template_on_error(student_name, usage_output, attempted_commands)
                 continue
 
         except Exception as e:
-            print(f"❌ Error with template: {e}")
+            print(f"ERROR: Error with template: {e}")
             continue
 
 
-def grade_single_student(student_data):
-    """
-    Grade a single student in a separate process
-
-    Args:
-        student_data: dict with keys: student_name, lab_file, arg_generator,
-                     usage_text, gcd_port, timeout, verbose
-
-    Returns:
-        tuple: (student_name, result_dict)
-    """
-    student_name = student_data['student_name']
-    lab_file = student_data['lab_file']
-    arg_generator = student_data['arg_generator']
-    usage_text = student_data['usage_text']
-    gcd_port = student_data['gcd_port']
-    timeout = student_data['timeout']
-    verbose = student_data['verbose']
-    gcd_script = student_data['gcd_script']
-
-    print(f"\n{'='*60}", flush=True)
-    print(f"[Process {os.getpid()}] Grading: {student_name}", flush=True)
-    print(f"{'='*60}", flush=True)
-    print(f"Using GCD port: {gcd_port}", flush=True)
-
-    # Start dedicated GCD server for this student
-    gcd = GCDServer(gcd_script, gcd_port)
-
-    if not gcd.start():
-        print(f"[{student_name}] Failed to start GCD server on port {gcd_port}!", flush=True)
-        return (student_name, {
-            "scores": {key: 0 for key in POINTS.keys()},
-            "comments": [],
-            "errors": [f"Failed to start GCD server on port {gcd_port}"],
-            "total": 0
-        })
-
-    print(f"[{student_name}] GCD server started on port {gcd_port}", flush=True)
-
-    try:
-        # Try grading, with retry if argument format is wrong
-        success = False
-        max_retries = 3
-        grader = None
-
-        for attempt in range(max_retries):
-            # Create grader
-            grader = StudentGrader(student_name, lab_file, arg_generator, verbose=verbose)
-
-            # Run and grade
-            if verbose:
-                print(f"\n[{student_name}] Running {NUM_NODES} nodes for {timeout} seconds...", flush=True)
-                print(f"{'─'*60}", flush=True)
-                print(f"[{student_name}] Real-time node output (color-coded):", flush=True)
-                print(f"{'─'*60}", flush=True)
-            else:
-                print(f"\n[{student_name}] Running {NUM_NODES} nodes for {timeout} seconds...", flush=True)
-
-            run_success = grader.run_nodes("localhost", gcd_port, timeout)
-
-            if run_success:
-                # No usage errors, proceed with grading
-                success = True
-                break
-            else:
-                # Usage errors detected - for parallel mode, we skip retries
-                # (interactive prompts don't work well in parallel)
-                print(f"[{student_name}] ⚠️  Usage errors detected. Marking as failed.", flush=True)
-                grader.stop_nodes()
-                break
-
-        if success and grader:
-            print(f"[{student_name}] Analyzing output...", flush=True)
-            result = grader.analyze_and_grade()
-
-            # Print summary
-            print(f"\n[{student_name}] Results:", flush=True)
-            print(f"  Total Score: {result['total']}/{sum(POINTS.values())}", flush=True)
-            if result['comments']:
-                print(f"  Comments:", flush=True)
-                for comment in result['comments']:
-                    print(f"    {comment}", flush=True)
-            if result['errors']:
-                print(f"  Errors:", flush=True)
-                for error in result['errors']:
-                    print(f"    ❌ {error}", flush=True)
-
-            return (student_name, result)
-        else:
-            return (student_name, {
-                "scores": {key: 0 for key in POINTS.keys()},
-                "comments": [],
-                "errors": ["Failed - usage errors detected"],
-                "total": 0
-            })
-
-    finally:
-        # Cleanup GCD
-        print(f"[{student_name}] Stopping GCD server...", flush=True)
-        gcd.stop()
-
-
 def main():
-    parser = argparse.ArgumentParser(description='Grade Bully Algorithm submissions')
-    parser.add_argument('--students', help='Comma-separated list of students to grade')
+    parser = argparse.ArgumentParser(description='Test Bully Algorithm submissions')
+    parser.add_argument('--students', help='Comma-separated list of students to test')
     parser.add_argument('--timeout', type=int, default=RUNTIME_SECONDS,
                        help=f'Runtime per student in seconds (default: {RUNTIME_SECONDS})')
     parser.add_argument('--gcd-port', type=int, default=GCD_PORT,
-                       help=f'Starting GCD port (default: {GCD_PORT})')
-    parser.add_argument('--output', default='grading_results.json',
-                       help='Output JSON file (default: grading_results.json)')
+                       help=f'GCD port (default: {GCD_PORT})')
+    parser.add_argument('--output', default='test_results.json',
+                       help='Output JSON file (default: test_results.json)')
     parser.add_argument('--base-dir', default='.',
                        help='Base directory containing student folders (default: current directory)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Show real-time output from nodes with color-coded events')
-    parser.add_argument('--parallel', '-p', action='store_true',
-                       help='Grade all students in parallel with separate GCD servers')
-    parser.add_argument('--max-parallel', type=int, default=4,
-                       help='Maximum number of students to grade in parallel (default: 4)')
 
     args = parser.parse_args()
 
@@ -819,24 +705,36 @@ def main():
         student_list = [s.strip() for s in args.students.split(',')]
         submissions = {k: v for k, v in submissions.items() if k in student_list}
 
-    print(f"Found {len(submissions)} student(s) to grade")
+    print(f"Found {len(submissions)} student(s) to test")
     print(f"Students: {', '.join(submissions.keys())}")
 
     # Results container
     results = {}
 
-    # Decide whether to run in parallel or sequential mode
-    if args.parallel:
-        print(f"\n🚀 PARALLEL MODE: Grading students in parallel (max {args.max_parallel} at a time)")
-        print(f"   Each student will have their own GCD server on separate ports")
-        print(f"   Note: Interactive prompts are disabled in parallel mode")
-        print(f"{'='*60}\n")
+    print(f"\nTesting students sequentially")
+    print(f"{'='*60}\n")
 
-        # Collect argument generators for all students
-        student_data_list = []
-        next_port = args.gcd_port
+    # Start GCD server
+    print(f"Starting GCD server on port {args.gcd_port}...")
+    gcd = GCDServer(gcd_script, args.gcd_port)
 
-        for student_name, lab_file in submissions.items():
+    if not gcd.start():
+        print("Failed to start GCD server!")
+        return 1
+
+    print("GCD server started successfully")
+
+    try:
+        # Test each student
+        for student_name, student_data in submissions.items():
+            print(f"\n{'='*60}")
+            print(f"Testing: {student_name}")
+            print(f"{'='*60}")
+
+            lab_file = student_data['lab_file']
+            student_dir = student_data['student_dir']
+
+            # Get argument generator for this student
             usage_text = usage_patterns.get(student_name, "")
             arg_generator = ArgumentParser.parse_usage_line(usage_text)
 
@@ -844,187 +742,109 @@ def main():
             confirmed_generator = prompt_for_argument_format(student_name, arg_generator, usage_text)
 
             if confirmed_generator is None and arg_generator is None:
-                # User chose to skip
+                # User chose to skip or no generator available
                 skip_response = input("\nNo argument format specified. Skip this student? (y/n): ").strip().lower()
                 if skip_response == 'y' or skip_response == 'yes':
-                    print(f"\n⏭️  Skipping {student_name}")
+                    print(f"\nSkipping {student_name}")
                     results[student_name] = {
-                        "scores": {key: 0 for key in POINTS.keys()},
-                        "comments": [],
-                        "errors": ["Skipped - no argument format"],
-                        "total": 0
+                        "status": "skipped",
+                        "reason": "No argument format",
+                        "timestamp": datetime.now().isoformat()
                     }
+                    # Reset GCD
+                    gcd.stop()
+                    time.sleep(1)
+                    gcd.start()
                     continue
 
             # Use confirmed generator (or keep the auto-detected one if user said yes)
             if confirmed_generator is not None:
                 arg_generator = confirmed_generator
 
-            student_data_list.append({
-                'student_name': student_name,
-                'lab_file': lab_file,
-                'arg_generator': arg_generator,
-                'usage_text': usage_text,
-                'gcd_port': next_port,
-                'timeout': args.timeout,
-                'verbose': args.verbose,
-                'gcd_script': gcd_script
-            })
-            next_port += 1
+            # Try testing, with retry if argument format is wrong
+            success = False
+            max_retries = 3
+            for attempt in range(max_retries):
+                # Create tester
+                tester = StudentTester(student_name, lab_file, arg_generator,
+                                      student_dir, verbose=args.verbose)
 
-        # Run grading in parallel using multiprocessing
-        if student_data_list:
-            print(f"\nStarting parallel grading of {len(student_data_list)} student(s)...")
-            print(f"{'='*60}\n")
+                # Run and collect output
+                if args.verbose:
+                    print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
+                    print(f"{'-'*60}")
+                    print("Real-time node output (color-coded):")
+                    print(f"{'-'*60}")
+                else:
+                    print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
 
-            with multiprocessing.Pool(processes=min(args.max_parallel, len(student_data_list))) as pool:
-                parallel_results = pool.map(grade_single_student, student_data_list)
+                run_success = tester.run_nodes("localhost", args.gcd_port, args.timeout)
 
-            # Collect results
-            for student_name, result in parallel_results:
-                results[student_name] = result
+                if run_success:
+                    # No usage errors, proceed
+                    success = True
+                    break
+                else:
+                    # Usage errors detected - prompt for manual input
+                    tester.stop_nodes()  # Clean up failed processes
 
-            print(f"\n{'='*60}")
-            print("✓ Parallel grading complete!")
-            print(f"{'='*60}")
+                    # Extract usage messages
+                    usage_lines = []
+                    for node_id, lines in tester.outputs.items():
+                        for _, line in lines:
+                            if 'usage:' in line.lower() or 'error:' in line.lower():
+                                usage_lines.append(line)
+                        if usage_lines:
+                            break  # Just need one example
 
-    else:
-        # Sequential mode (original behavior)
-        print(f"\n📋 SEQUENTIAL MODE: Grading students one at a time")
-        print(f"{'='*60}\n")
+                    # Get attempted commands for display
+                    attempted_cmds = tester.get_attempted_commands()
 
-        # Start GCD server
-        print(f"Starting GCD server on port {args.gcd_port}...")
-        gcd = GCDServer(gcd_script, args.gcd_port)
+                    # Prompt user for correct template
+                    new_generator = prompt_for_template_on_error(student_name, usage_lines, attempted_cmds)
 
-        if not gcd.start():
-            print("Failed to start GCD server!")
-            return 1
-
-        print("GCD server started successfully")
-
-        try:
-            # Grade each student
-            for student_name, lab_file in submissions.items():
-                print(f"\n{'='*60}")
-                print(f"Grading: {student_name}")
-                print(f"{'='*60}")
-
-                # Get argument generator for this student
-                usage_text = usage_patterns.get(student_name, "")
-                arg_generator = ArgumentParser.parse_usage_line(usage_text)
-
-                # Always prompt user to confirm/change argument format
-                confirmed_generator = prompt_for_argument_format(student_name, arg_generator, usage_text)
-
-                if confirmed_generator is None and arg_generator is None:
-                    # User chose to skip or no generator available
-                    skip_response = input("\nNo argument format specified. Skip this student? (y/n): ").strip().lower()
-                    if skip_response == 'y' or skip_response == 'yes':
-                        print(f"\n⏭️  Skipping {student_name}")
+                    if new_generator is None:
+                        # User chose to skip this student
+                        print(f"\nSkipping {student_name}")
                         results[student_name] = {
-                            "scores": {key: 0 for key in POINTS.keys()},
-                            "comments": [],
-                            "errors": ["Skipped - no argument format"],
-                            "total": 0
+                            "status": "skipped",
+                            "reason": "Incorrect argument format",
+                            "timestamp": datetime.now().isoformat()
                         }
-                        # Reset GCD
-                        gcd.stop()
-                        time.sleep(1)
-                        gcd.start()
-                        continue
-
-                # Use confirmed generator (or keep the auto-detected one if user said yes)
-                if confirmed_generator is not None:
-                    arg_generator = confirmed_generator
-
-                # Try grading, with retry if argument format is wrong
-                success = False
-                max_retries = 3
-                for attempt in range(max_retries):
-                    # Create grader
-                    grader = StudentGrader(student_name, lab_file, arg_generator, verbose=args.verbose)
-
-                    # Run and grade
-                    if args.verbose:
-                        print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
-                        print(f"{'─'*60}")
-                        print("Real-time node output (color-coded):")
-                        print(f"{'─'*60}")
-                    else:
-                        print(f"\nRunning {NUM_NODES} nodes for {args.timeout} seconds...")
-
-                    run_success = grader.run_nodes("localhost", args.gcd_port, args.timeout)
-
-                    if run_success:
-                        # No usage errors, proceed with grading
-                        success = True
                         break
-                    else:
-                        # Usage errors detected - prompt for manual input
-                        grader.stop_nodes()  # Clean up failed processes
 
-                        # Extract usage messages
-                        usage_lines = []
-                        for node_id, lines in grader.outputs.items():
-                            for _, line in lines:
-                                if 'usage:' in line.lower():
-                                    usage_lines.append(line)
-                            if usage_lines:
-                                break  # Just need one example
+                    # Update arg_generator and retry
+                    arg_generator = new_generator
+                    print(f"\nRetrying with new argument format...")
 
-                        # Get attempted commands for display
-                        attempted_cmds = grader.get_attempted_commands()
+                    # Reset GCD
+                    gcd.stop()
+                    time.sleep(1)
+                    gcd.start()
 
-                        # Prompt user for correct template
-                        new_generator = prompt_for_template_on_error(student_name, usage_lines, attempted_cmds)
+            if success:
+                print("\nTest completed successfully")
+                summary = tester.get_summary()
+                results[student_name] = summary
 
-                        if new_generator is None:
-                            # User chose to skip this student
-                            print(f"\n⏭️  Skipping {student_name}")
-                            results[student_name] = {
-                                "scores": {key: 0 for key in POINTS.keys()},
-                                "comments": [],
-                                "errors": ["Skipped - incorrect argument format"],
-                                "total": 0
-                            }
-                            break
+                # Print summary
+                print(f"\nResults for {student_name}:")
+                print(f"  Nodes started: {summary['nodes_started']}")
+                print(f"  Log files saved: {', '.join(summary['log_files'])}")
+                if summary['errors']:
+                    print("  Errors:")
+                    for error in summary['errors']:
+                        print(f"    ERROR: {error}")
 
-                        # Update arg_generator and retry
-                        arg_generator = new_generator
-                        print(f"\n🔄 Retrying with new argument format...")
-
-                        # Reset GCD
-                        gcd.stop()
-                        time.sleep(1)
-                        gcd.start()
-
-                if success:
-                    print("\nAnalyzing output...")
-                    result = grader.analyze_and_grade()
-                    results[student_name] = result
-
-                    # Print summary
-                    print(f"\nResults for {student_name}:")
-                    print(f"  Total Score: {result['total']}/{sum(POINTS.values())}")
-                    if result['comments']:
-                        print("  Comments:")
-                        for comment in result['comments']:
-                            print(f"    {comment}")
-                    if result['errors']:
-                        print("  Errors:")
-                        for error in result['errors']:
-                            print(f"    ❌ {error}")
-
-                # Reset GCD between students
-                gcd.stop()
-                time.sleep(1)
-                gcd.start()
-
-        finally:
-            # Cleanup GCD
-            print("\nStopping GCD server...")
+            # Reset GCD between students
             gcd.stop()
+            time.sleep(1)
+            gcd.start()
+
+    finally:
+        # Cleanup GCD
+        print("\nStopping GCD server...")
+        gcd.stop()
 
     # Save results to JSON
     output_file = args.output
@@ -1032,18 +852,17 @@ def main():
         json.dump(results, f, indent=2)
 
     print(f"\n{'='*60}")
-    print(f"Grading complete! Results saved to {output_file}")
+    print(f"Testing complete! Results saved to {output_file}")
     print(f"{'='*60}")
 
     # Print summary table
     print("\nSummary:")
-    print(f"{'Student':<20} {'Total':<10} {'Status'}")
-    print("-" * 50)
+    print(f"{'Student':<20} {'Status':<15} {'Log Files'}")
+    print("-" * 60)
     for student, result in results.items():
-        total = result['total']
-        max_score = sum(POINTS.values())
-        status = "✓ PASS" if total >= 50 else "✗ FAIL"
-        print(f"{student:<20} {total}/{max_score:<8} {status}")
+        status = result.get('status', 'completed')
+        log_files = ', '.join(result.get('log_files', []))
+        print(f"{student:<20} {status:<15} {log_files}")
 
     return 0
 
